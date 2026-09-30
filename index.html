@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Оформление заказа</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #000); padding: 15px; margin: 0; }
+    .section { margin-bottom: 20px; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 14px; }
+    select, input { width: 100%; padding: 12px; margin-bottom: 12px; border-radius: 10px; border: 1px solid #ccc; box-sizing: border-box; font-size: 15px; }
+    .item-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #eee; }
+    .qty-controls { display: flex; align-items: center; gap: 12px; }
+    .qty-btn { width: 32px; height: 32px; border: none; background: #0088cc; color: white; border-radius: 8px; font-size: 18px; font-weight: bold; cursor: pointer; }
+    .loader { text-align: center; padding: 20px; font-size: 16px; color: #666; }
+  </style>
+</head>
+<body>
+
+  <div id="loading" class="loader">Загрузка актуального меню...</div>
+
+  <div id="app" style="display: none;">
+    <h2>Оформление заказа</h2>
+
+    <div class="section">
+      <label for="order-date">Дата доставки:</label>
+      <select id="order-date"></select>
+
+      <label for="location">Точка доставки:</label>
+      <select id="location"></select>
+    </div>
+
+    <div class="section">
+      <h3>Позиции</h3>
+      <div id="menu-list"></div>
+    </div>
+
+    <div class="section">
+      <label for="staff">Стафф:</label>
+      <select id="staff">
+        <option value="Без стаффа">Без стаффа</option>
+        <option value="Стафф на 1х">Стафф на 1х</option>
+        <option value="Стафф на 2х">Стафф на 2х</option>
+        <option value="Стафф на 3х">Стафф на 3х</option>
+        <option value="Стафф на 4х">Стафф на 4х</option>
+      </select>
+
+      <label for="phone">Контактный телефон:</label>
+      <input type="tel" id="phone" placeholder="+7 999 000-00-00">
+    </div>
+  </div>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+
+    // ССЫЛКА НА ВАШ GOOGLE APPS SCRIPT ИЗ ШАГА 2
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbxCTkIbnroqPNXn-9w8R38CjiQ_gwW5huaQaIPkTfenzFCjraJMXM0BPBUFezoW84i3oA/exec";
+
+    const cart = {};
+
+    // Заполнение дат (Сегодня / Завтра)
+    const dateSelect = document.getElementById('order-date');
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const fmt = d => d.toLocaleDateString('ru-RU');
+
+    dateSelect.innerHTML = `
+      <option value="${fmt(today)}">Сегодня (${fmt(today)})</option>
+      <option value="${fmt(tomorrow)}">Завтра (${fmt(tomorrow)})</option>
+    `;
+
+    // Загрузка динамических данных из Таблицы
+    async function initApp() {
+      try {
+        const res = await fetch(GAS_URL);
+        const data = await res.json();
+
+        // Заполняем точки
+        const locSelect = document.getElementById('location');
+        locSelect.innerHTML = data.locations.map(l => `<option value="${l}">${l}</option>`).join('');
+
+        // Заполняем меню
+        const menuContainer = document.getElementById('menu-list');
+        data.menu.forEach(item => {
+          cart[item] = 0;
+          const row = document.createElement('div');
+          row.className = 'item-row';
+          row.innerHTML = `
+            <span>${item}</span>
+            <div class="qty-controls">
+              <button class="qty-btn" onclick="updateQty('${item}', -1)">-</button>
+              <span id="qty-${item}">0</span>
+              <button class="qty-btn" onclick="updateQty('${item}', 1)">+</button>
+            </div>
+          `;
+          menuContainer.appendChild(row);
+        });
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('app').style.display = 'block';
+
+        tg.MainButton.text = "ОФОРМИТЬ ЗАКАЗ";
+        tg.MainButton.show();
+      } catch (err) {
+        document.getElementById('loading').innerText = "Ошибка загрузки данных. Проверьте соединение.";
+      }
+    }
+
+    function updateQty(item, change) {
+      cart[item] = Math.max(0, cart[item] + change);
+      document.getElementById(`qty-${item}`).innerText = cart[item];
+    }
+
+    tg.MainButton.onClick(async () => {
+      const selectedItems = [];
+      for (const [name, qty] of Object.entries(cart)) {
+        if (qty > 0) selectedItems.push({ name, qty });
+      }
+
+      if (selectedItems.length === 0) {
+        tg.showAlert("Выберите хотя бы одну позицию в заказ!");
+        return;
+      }
+
+      const user = tg.initDataUnsafe.user;
+      const userName = user ? (user.username ? `@${user.username}` : `${user.first_name}`) : "Аноним";
+
+      const payload = {
+        date: dateSelect.value,
+        location: document.getElementById('location').value,
+        items: selectedItems,
+        staff: document.getElementById('staff').value,
+        phone: document.getElementById('phone').value,
+        user: userName
+      };
+
+      tg.MainButton.showProgress();
+
+      // Отправка заказа в Apps Script
+      await fetch(GAS_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      tg.MainButton.hideProgress();
+      tg.close(); // Закрываем Mini App
+    });
+
+    initApp();
+  </script>
+</body>
+</html>
